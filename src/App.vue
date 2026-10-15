@@ -202,68 +202,33 @@ const loadImage = (imageURL) => {
   });
 }
 
-const canvasResize = (canvas, scale_ratio) => {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      canvas.width *= scale_ratio;
-      canvas.height *= scale_ratio;
-      ctx.scale(scale_ratio, scale_ratio);
-      ctx.drawImage(img, 0, 0);
-      // update grayscaleImage info
-      grayscaleImage.width = canvas.width;
-      grayscaleImage.height = canvas.height;
-      resolve(canvas.toDataURL());
-    };
-    img.src = canvas.toDataURL();
-  });
-};
-
 const grayscale = (imageURL) => {
   return new Promise(resolve => {
     try {
-      // get image
-      const canvas = document.createElement("canvas");
       const img = new Image();
-      img.onload = async () => {
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        canvas.width = img.width;
-        canvas.height = img.height;
-        // draw image to canvas
-        ctx.drawImage(img, 0, 0);
-        // get image data
-        const pixels = ctx.getImageData(0, 0, Number(canvas.width), Number(canvas.height));
-        // update input image info
+      img.onload = () => {
+        // 单次 GPU 通道完成灰度化+缩放（替代原逐像素 JS 循环）
+        const scale = outputAA.width / img.width;
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.filter = 'grayscale(1)';
+        ctx.drawImage(img, 0, 0, w, h);
+        // update image info
         inputImage.width = img.width;
         inputImage.height = img.height;
-        // grayscaling
-        for (let y = 0; y < pixels.height; y++) {
-          for (let x = 0; x < pixels.width; x++) {
-            // sampling pixel(RGBA)
-            const pos = (y * pixels.width + x) * 4;
-            // RGB to grayscale color
-            const grayScalePixelColor = Number.parseInt(
-              0.299 * pixels.data[pos] +
-              0.587 * pixels.data[pos + 1] +
-              0.114 * pixels.data[pos + 2], 10);
-            // update pixel data
-            pixels.data[pos] = grayScalePixelColor; // R
-            pixels.data[pos + 1] = grayScalePixelColor; // G
-            pixels.data[pos + 2] = grayScalePixelColor; // B
-            pixels.data[pos + 3] = 255;                 // A
-          }
-        }
-        ctx.putImageData(pixels, 0, 0);
-        // update scale
-        const scale_ratio = outputAA.width / img.width;
-        const dataUrl = await canvasResize(canvas, scale_ratio);
-        resolve(dataUrl);
+        grayscaleImage.width = w;
+        grayscaleImage.height = h;
+        resolve(canvas.toDataURL());
       };
+      img.onerror = () => resolve('');
       img.src = imageURL;
     } catch (err) {
       console.error('grayscale: ', err.message);
-      resultAA.value = err.message;
+      resolve('');
     }
   });
 };
@@ -327,7 +292,7 @@ const convertAA = async () => {
       // update line preview canvas size
       previewLineImage.width = pixels.width;
       // update screen
-      await setInterval(16);
+      await sleep(16);
     }
 
     const float32concat = (first, second) => {
@@ -354,9 +319,9 @@ const convertAA = async () => {
         return Promise.resolve();
       }
       if (highSpeedMode.value) {
-        return setInterval(1);
+        return sleep(1);
       }
-      return setInterval(16);
+      return sleep(16);
     };
 
     const DEBUG = true;
@@ -388,6 +353,7 @@ const convertAA = async () => {
       let start = 0;
       let end = 64;
       let penalty = 1;
+      const lineChars = [];
 
       while (end <= dataTensor.shape[0]) {
         // set timeout
@@ -411,7 +377,7 @@ const convertAA = async () => {
           .then(value => {
             const y = ndarray(value.predictions);
             if (penalty === 1) {
-              y.set(1, 0);
+              y.set(whiteSpaceIndex, 0);
             }
 
             const resultCharIndex = ops.argmax(y);
@@ -421,7 +387,8 @@ const convertAA = async () => {
               console.log(`half white space: ${resultCharIndex}`);
             }
 
-            resultAA.text += char;
+            // 先累积到行缓冲，整行结束后一次性写入（避免每字符触发 Vue 重渲染）
+            lineChars.push(char);
 
             start += charWidth;
             end += charWidth;
@@ -453,8 +420,8 @@ const convertAA = async () => {
           timeout
         ]);
       }
-      resultAA.text = resultAA.text.trimEnd();
-      resultAA.text += '\n';
+      // 整行结束：一次性写入结果文本（保持原有 trimEnd 行为）
+      resultAA.text += lineChars.join('').trimEnd() + '\n';
       await pLineImage;
     }
     // finish
@@ -538,7 +505,7 @@ const updatePreviewPatchImage = async (data) => {
   ctx.strokeRect(24, 24, 16, 16);
 };
 
-const setInterval = async (ms) => {
+const sleep = async (ms) => {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
