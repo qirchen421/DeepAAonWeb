@@ -7,7 +7,7 @@
       <div class="navbar-text" v-else-if="modelInitializing" v-cloak>
         Model Initializing...{{ modelInitProgress }}%
       </div>
-      <v-btn prepend-icon="mdi-github" href="https://github.com/tar-bin/DeepAAonWeb" target="_blank">
+      <v-btn prepend-icon="mdi-github" href="https://github.com/qirchen421/DeepAAonWeb" target="_blank">
         DeepAAonWeb
       </v-btn>
       <v-btn prepend-icon="mdi-github" href="https://github.com/OsciiArt/DeepAA" target="_blank">
@@ -93,6 +93,9 @@
         </v-card>
       </v-container>
     </v-main>
+    <v-snackbar v-model="snackbar.show" :timeout="4000">
+      {{ snackbar.text }}
+    </v-snackbar>
   </v-app>
 </template>
 
@@ -101,7 +104,7 @@ import { useHead } from '@unhead/vue'
 import * as KerasJS from 'keras-js'
 import ndarray from 'ndarray'
 import ops from 'ndarray-ops'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import CharListFile from './assets/char_list.json'
 import kerasModelUrl from './assets/model/model_v2.bin?url';
 import sampleImageUrl from './assets/sample-data/test_image.png?url';
@@ -144,6 +147,8 @@ const resultAA = reactive({
   rows: 8
 });
 const highSpeedMode = ref(true);
+const isHidden = ref(false);
+const snackbar = reactive({ show: false, text: '' });
 
 const model = new KerasJS.Model({
   filepath: kerasModelUrl,
@@ -342,6 +347,12 @@ const convertAA = async () => {
     };
 
     const getInterval = () => {
+      // 浏览器会对后台标签页的定时器做节流（setTimeout 被 clamp 到最短 1s），
+      // 而模型预测本身是同步的 WebGL 调用、不受节流影响。
+      // 页面隐藏时跳过 sleep，让演算在后台也能全速进行。
+      if (document.hidden) {
+        return Promise.resolve();
+      }
       if (highSpeedMode.value) {
         return setInterval(1);
       }
@@ -531,16 +542,47 @@ const setInterval = async (ms) => {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// 页面可见性变化：转换中切到后台时标记状态，切回前台时提示演算未中断
+const onVisibilityChange = () => {
+  isHidden.value = document.hidden;
+  if (!document.hidden && modelRunning.value) {
+    snackbar.text = '离开期间演算已在后台继续（已绕过浏览器的后台节流）';
+    snackbar.show = true;
+  }
+};
+
+// 转换进行中关闭/刷新窗口时弹出确认，防止误触丢失全部进度
+const onBeforeUnload = (e) => {
+  if (modelRunning.value) {
+    e.preventDefault();
+    e.returnValue = '';
+    return e.returnValue;
+  }
+};
+
 model.events.on('loadingProgress', handleLoadingProgress);
 model.events.on('initProgress', handleInitProgress);
 
 onMounted(async () => {
   await loadImage(inputImage.URL);
   initLineImagePatchGuideRect();
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('beforeunload', onBeforeUnload);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+  window.removeEventListener('beforeunload', onBeforeUnload);
 });
 
 useHead({
-  title: outputAA.totalPercentage !== 0 ? `[${outputAA.totalPercentage}%] DeepAA on Web` : 'DeepAA on Web'
+  title: computed(() => {
+    if (outputAA.totalPercentage !== 0) {
+      const bg = modelRunning.value && isHidden.value ? '[后台演算中] ' : '';
+      return `${bg}[${outputAA.totalPercentage}%] DeepAA on Web`;
+    }
+    return 'DeepAA on Web';
+  })
 })
 </script>
 

@@ -4,7 +4,7 @@
   "description": "DeepAA front-end on Web",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tar-bin/DeepAAonWeb"
+    "url": "https://github.com/qirchen421/DeepAAonWeb"
   },
   "scripts": {
     "dev": "vite",
