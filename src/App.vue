@@ -93,9 +93,6 @@
         </v-card>
       </v-container>
     </v-main>
-    <v-snackbar v-model="snackbar.show" :timeout="4000">
-      {{ snackbar.text }}
-    </v-snackbar>
   </v-app>
 </template>
 
@@ -104,7 +101,7 @@ import { useHead } from '@unhead/vue'
 import * as KerasJS from 'keras-js'
 import ndarray from 'ndarray'
 import ops from 'ndarray-ops'
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import CharListFile from './assets/char_list.json'
 import kerasModelUrl from './assets/model/model_v2.bin?url';
 import sampleImageUrl from './assets/sample-data/test_image.png?url';
@@ -147,8 +144,6 @@ const resultAA = reactive({
   rows: 8
 });
 const highSpeedMode = ref(true);
-const isHidden = ref(false);
-const snackbar = reactive({ show: false, text: '' });
 
 const model = new KerasJS.Model({
   filepath: kerasModelUrl,
@@ -312,12 +307,6 @@ const convertAA = async () => {
     };
 
     const getInterval = () => {
-      // 浏览器会对后台标签页的定时器做节流（setTimeout 被 clamp 到最短 1s），
-      // 而模型预测本身是同步的 WebGL 调用、不受节流影响。
-      // 页面隐藏时跳过 sleep，让演算在后台也能全速进行。
-      if (document.hidden) {
-        return Promise.resolve();
-      }
       if (highSpeedMode.value) {
         return sleep(1);
       }
@@ -356,8 +345,6 @@ const convertAA = async () => {
       const lineChars = [];
 
       while (end <= dataTensor.shape[0]) {
-        // set timeout
-        const timeout = getInterval();
         // update line progress
         updateProgress(i, end);
         // reshape
@@ -416,9 +403,11 @@ const convertAA = async () => {
         // update preview image
         await Promise.all([
           pKerasPredict,
-          pPatchImage,
-          timeout
+          pPatchImage
         ]);
+        // sleep 在推理之后串行执行：低速模式的节流才能真正生效
+        // （原来与推理并发执行，会被推理耗时完全掩盖，两种模式无差别）
+        await getInterval();
       }
       // 整行结束：一次性写入结果文本（保持原有 trimEnd 行为）
       resultAA.text += lineChars.join('').trimEnd() + '\n';
@@ -509,15 +498,6 @@ const sleep = async (ms) => {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// 页面可见性变化：转换中切到后台时标记状态，切回前台时提示演算未中断
-const onVisibilityChange = () => {
-  isHidden.value = document.hidden;
-  if (!document.hidden && modelRunning.value) {
-    snackbar.text = '离开期间演算已在后台继续（已绕过浏览器的后台节流）';
-    snackbar.show = true;
-  }
-};
-
 // 转换进行中关闭/刷新窗口时弹出确认，防止误触丢失全部进度
 const onBeforeUnload = (e) => {
   if (modelRunning.value) {
@@ -533,23 +513,15 @@ model.events.on('initProgress', handleInitProgress);
 onMounted(async () => {
   await loadImage(inputImage.URL);
   initLineImagePatchGuideRect();
-  document.addEventListener('visibilitychange', onVisibilityChange);
   window.addEventListener('beforeunload', onBeforeUnload);
 });
 
 onUnmounted(() => {
-  document.removeEventListener('visibilitychange', onVisibilityChange);
   window.removeEventListener('beforeunload', onBeforeUnload);
 });
 
 useHead({
-  title: computed(() => {
-    if (outputAA.totalPercentage !== 0) {
-      const bg = modelRunning.value && isHidden.value ? '[后台演算中] ' : '';
-      return `${bg}[${outputAA.totalPercentage}%] DeepAA on Web`;
-    }
-    return 'DeepAA on Web';
-  })
+  title: outputAA.totalPercentage !== 0 ? `[${outputAA.totalPercentage}%] DeepAA on Web` : 'DeepAA on Web'
 })
 </script>
 
